@@ -41,10 +41,12 @@ else
 CPP     += -DIOXD_TLS=0
 LIBS    :=
 endif
-# Response compression: brotli and zlib, each when pkg-config finds it (make BROTLI=0 or ZLIB=0
-# leaves one out; the middleware then codes with what it has).
+# Response compression: brotli, zlib and libdeflate, each when pkg-config finds it (make BROTLI=0,
+# ZLIB=0 or LIBDEFLATE=0 leaves one out; the middleware then codes with what it has). libdeflate
+# codes gzip in one call for a body that fit the slab; zlib streams it.
 BROTLI  ?= $(shell pkg-config --exists libbrotlienc 2>/dev/null && echo 1 || echo 0)
 ZLIB    ?= $(shell pkg-config --exists zlib 2>/dev/null && echo 1 || echo 0)
+LIBDEFLATE ?= $(shell pkg-config --exists libdeflate 2>/dev/null && echo 1 || echo 0)
 ifeq ($(BROTLI),1)
 CPP     += -DIOXD_BROTLI=1 $(patsubst -I%,-isystem %,$(shell pkg-config --cflags libbrotlienc))
 LIBS    += $(shell pkg-config --libs libbrotlienc)
@@ -52,6 +54,10 @@ endif
 ifeq ($(ZLIB),1)
 CPP     += -DIOXD_ZLIB=1 $(patsubst -I%,-isystem %,$(shell pkg-config --cflags zlib))
 LIBS    += $(shell pkg-config --libs zlib)
+endif
+ifeq ($(LIBDEFLATE),1)
+CPP     += -DIOXD_LIBDEFLATE=1 $(patsubst -I%,-isystem %,$(shell pkg-config --cflags libdeflate))
+LIBS    += $(shell pkg-config --libs libdeflate)
 endif
 HDRS    := $(wildcard include/*.h include/ioxd/*.h lib/*/*.h)
 PTHREAD := -pthread

@@ -735,6 +735,17 @@ static void test_config(void)
     CHECK(ioxd_configure(&(ioxd_config){ .recv_buffers = 8, .recv_buffer_size = 64 }) == 0);   /* the starved test build */
     CHECK(ioxd_configure(&(ioxd_config){ 0 }) == 0);                                /* back to the defaults */
 
+    /* The compression middleware's: a tie's winner shows in the order of the codings it reports. */
+    const char *codings = ioxd_compress_codings();
+    CHECK(!strcmp(codings, "gzip, br") || !strcmp(codings, "br, gzip") || !strcmp(codings, "br") || !strcmp(codings, "gzip")
+          || !strcmp(codings, ""));
+    if (strchr(codings, ',')) {
+        CHECK(ioxd_compress_configure(&(ioxd_compress_config){ .prefer = IOXD_PREFER_BR }) == 0 && !strcmp(ioxd_compress_codings(), "br, gzip"));
+        CHECK(ioxd_compress_configure(&(ioxd_compress_config){ .prefer = IOXD_PREFER_GZIP }) == 0 && !strcmp(ioxd_compress_codings(), "gzip, br"));
+    }
+    CHECK(ioxd_compress_configure(&(ioxd_compress_config){ .prefer = (ioxd_compress_prefer)7 }) == -1);
+    CHECK(ioxd_compress_configure(&(ioxd_compress_config){ .brotli_quality = 12 }) == -1);
+    CHECK(ioxd_compress_configure(&(ioxd_compress_config){ .gzip_level = 10 }) == -1);
 }
 
 /* ioxd_delay off a worker: nothing to wait on, and no sleeping either. */

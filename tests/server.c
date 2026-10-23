@@ -373,6 +373,12 @@ static void json_structs(ioxd_ctx *ctx)
     ioxd_json_end(&j);
 }
 
+/* GET /zip/codings - what this build codes, the one a tie goes to for a whole body first. */
+static void codings(ioxd_ctx *ctx)
+{
+    ioxd_text(ctx, ioxd_compress_codings());
+}
+
 /* GET /headers?n=N - adds N headers; reports how many the reply took (IOXD_MAX_RESP_HEADERS). */
 static void headers(ioxd_ctx *ctx)
 {
@@ -603,6 +609,7 @@ int main(void)
     IOXD_GET ("/json/:id",              json_item);
     IOXD_GET ("/json/big",              json_big, ioxd_compress);   /* static beside the capture; coded when the client takes br or gzip */
     IOXD_GET ("/json/structs",          json_structs, ioxd_compress);   /* IOXD_JSON_STRUCT's run, cut by the slab's flushes */
+    IOXD_GET ("/zip/codings",           codings);                   /* the build's codings, a whole body's tie first */
     IOXD_GET ("/zip/stream",            stream,   ioxd_compress);   /* a chunked feed, coded flush by flush */
     IOXD_GET ("/zip/declared",          declared, ioxd_compress);   /* a declared length: streams coded, chunked */
     IOXD_GET ("/zip/health",            health,   ioxd_compress);   /* two bytes: below min_bytes, as it is */
