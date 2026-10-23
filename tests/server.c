@@ -6,6 +6,7 @@
 
 #include <errno.h>
 
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -333,6 +334,45 @@ static void json_big(ioxd_ctx *ctx)
     ioxd_json_end(&j);
 }
 
+/* GET /json/structs?n=N - N structs through IOXD_JSON_STRUCT, far more than the slab holds: every
+ * kind of value, escapes, and every fiftieth a string longer than a run writes in place, so the
+ * slab's flushes cut the structs at every sort of place. */
+#define CELL_FIELDS(X)                              \
+    X(VALUE,  int64_t,      i)                      \
+    X(VALUE,  uint64_t,     sq)                     \
+    X(VALUE,  ioxd_slice,   name)                   \
+    X(VALUE,  const char *, note)                   \
+    X(VALUE,  bool,         odd)                    \
+    X(VALUE,  double,       half)                   \
+    X(ARRAY,  int,          digits, n_digits)
+IOXD_JSON_STRUCT(cell, CELL_FIELDS)
+
+static char long_note[1500];                     /* 1499 'z's: filled in main, before the run */
+
+static void json_structs(ioxd_ctx *ctx)
+{
+    static const char *const notes[] = { "plain", "a \"quoted\" word", "tab\there", "back\\slash", "nl\n" };
+    int64_t n = 2000;
+    for (size_t i = 0; i < ctx->req.n_params; i++)
+        if (ioxd_slice_eq(ctx->req.params[i].key, "n"))
+            ioxd_to_i64(ctx->req.params[i].value, &n);
+    ioxd_json j = ioxd_json_reply(ctx);
+    ioxd_json_array(&j);
+    for (int64_t i = 0; i < n; i++) {
+        char        name[32];
+        int         len       = snprintf(name, sizeof name, "cell-%lld", (long long)i);
+        int         digits[3] = { (int)(i % 10), (int)(i / 10 % 10), (int)(i / 100 % 10) };
+        struct cell c         = {
+            .i = i, .sq = (uint64_t)(i * i), .name = { name, (size_t)len },
+            .note = i % 50 == 49 ? long_note : notes[i % 5], .odd = i % 2 != 0, .half = (double)i / 2,
+            .digits = digits, .n_digits = (size_t)(i % 4),
+        };
+        if (!cell_to_json(&j, &c))
+            return;
+    }
+    ioxd_json_end(&j);
+}
+
 /* GET /headers?n=N - adds N headers; reports how many the reply took (IOXD_MAX_RESP_HEADERS). */
 static void headers(ioxd_ctx *ctx)
 {
@@ -541,6 +581,7 @@ static long env_number(const char *name, long fallback)
 
 int main(void)
 {
+    memset(long_note, 'z', sizeof long_note - 1);
 
     /* the routes as a script: outside any IOXD_GROUP block this is the root */
     IOXD_USE(add_server);                        /* root middleware: every request */
@@ -561,6 +602,7 @@ int main(void)
     IOXD_POST("/chunks",                chunks);
     IOXD_GET ("/json/:id",              json_item);
     IOXD_GET ("/json/big",              json_big, ioxd_compress);   /* static beside the capture; coded when the client takes br or gzip */
+    IOXD_GET ("/json/structs",          json_structs, ioxd_compress);   /* IOXD_JSON_STRUCT's run, cut by the slab's flushes */
     IOXD_GET ("/zip/stream",            stream,   ioxd_compress);   /* a chunked feed, coded flush by flush */
     IOXD_GET ("/zip/declared",          declared, ioxd_compress);   /* a declared length: streams coded, chunked */
     IOXD_GET ("/zip/health",            health,   ioxd_compress);   /* two bytes: below min_bytes, as it is */

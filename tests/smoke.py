@@ -567,6 +567,21 @@ results.append(check("GET /json/big -> 3000 objects streamed chunked, valid JSON
                      closed and b"transfer-encoding: chunked" in head.lower()
                      and len(doc) == 3000 and doc[2999] == {"i": 2999, "sq": 2999 * 2999}))
 
+# Structs through IOXD_JSON_STRUCT's run, which the slab's flushes cut at every sort of place.
+s = connect()
+s.send(b"GET /json/structs?n=3000 HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n")
+raw, closed = read_to_close(s)
+s.close()
+head, _, rest = raw.partition(b"\r\n\r\n")
+text = dechunk(rest)
+cells = __import__("json").loads(text)
+notes = ["plain", 'a "quoted" word', "tab\there", "back\\slash", "nl\n"]
+want = [{"i": i, "sq": i * i, "name": f"cell-{i}", "note": "z" * 1499 if i % 50 == 49 else notes[i % 5],
+         "odd": i % 2 == 1, "half": i / 2, "digits": [i % 10, i // 10 % 10, i // 100 % 10][:i % 4]} for i in range(3000)]
+results.append(check("GET /json/structs -> 3000 structs streamed chunked, every value back, in field order",
+                     closed and b"transfer-encoding: chunked" in head.lower() and cells == want
+                     and text.startswith(b'[{"i":0,"sq":0,"name":"cell-0","note":"plain","odd":false,"half":0,"digits":[]},{"i":1,')))
+
 # --- groups: prefixes chain, middleware wraps outer to inner, one endpoint's own middleware ---
 st, hd, body = get("/api/ping")
 results.append(check("GET /api/ping -> group prefix, group middleware, root middleware",

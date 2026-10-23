@@ -95,6 +95,11 @@ static inline bool needs_escape(unsigned char c)
 static size_t clean_run(const char *p, size_t n)
 {
     size_t run = 0;
+    for (uint64_t w, found; run + 8 <= n; run += 8) {
+        memcpy(&w, p + run, 8);
+        if ((found = ioxd__json_escapes(w)))
+            return run + (size_t)__builtin_ctzll(found) / 8;
+    }
     while (run < n && !needs_escape((unsigned char)p[run]))
         run++;
     return run;
@@ -422,4 +427,77 @@ bool ioxd_json_raw(ioxd_json *j, ioxd_slice json)
     if (comma && !put(j, ",", 1))
         return false;
     return put(j, json.p, json.len);
+}
+
+/* ── a struct's run ────────────────────────────────────────────────────────────────────── */
+
+ioxd__json_run ioxd__json_open(ioxd_json *j)
+{
+    int comma = value_lead(j);
+    if (comma < 0)
+        return (ioxd__json_run){};
+    char *at = want(j, (size_t)comma + 1);
+    if (!at)
+        return (ioxd__json_run){};
+    size_t room;
+    tail(j, &room);
+    j->run = at;
+    if (comma)
+        *at++ = ',';
+    return (ioxd__json_run){ at, j->run + room };
+}
+
+ioxd__json_run ioxd__json_room(ioxd_json *j, char *p, size_t need)
+{
+    if (!p || j->failed)
+        return (ioxd__json_run){};
+    commit(j, (size_t)(p - j->run));
+    char *at = want(j, need);
+    if (!at)
+        return (ioxd__json_run){};
+    size_t room;
+    tail(j, &room);
+    j->run = at;
+    return (ioxd__json_run){ at, at + room };
+}
+
+bool ioxd__json_close(ioxd_json *j, char *p)
+{
+    if (!p || j->failed) {
+        j->failed = true;
+        return false;
+    }
+    commit(j, (size_t)(p - j->run));
+    return true;
+}
+
+ioxd__json_run ioxd__json_quote(ioxd_json *j, ioxd__json_run r, const char *s, size_t n)
+{
+    if (!r.p || j->failed)
+        return (ioxd__json_run){};
+    commit(j, (size_t)(r.p - j->run));
+    if (!put(j, "\"", 1) || !put_escaped(j, s, n) || !put(j, "\"", 1))
+        return (ioxd__json_run){};
+    size_t room;
+    char  *at = tail(j, &room);
+    j->run = at;
+    return (ioxd__json_run){ at, at + room };
+}
+
+ioxd__json_run ioxd__json_real(ioxd_json *j, ioxd__json_run r, double v, bool as_float)
+{
+    if (!isfinite(v))
+        return ioxd__json_lit(j, r, "null", 4);
+    char tmp[32];
+    int  n = as_float ? shortest(tmp, sizeof tmp, v, 6, 9, true) : shortest(tmp, sizeof tmp, v, 15, 17, false);
+    if (n < 0) {
+        j->failed = true;
+        return (ioxd__json_run){};
+    }
+    r = ioxd__json_need(j, r, (size_t)n);
+    if (!r.p)
+        return r;
+    memcpy(r.p, tmp, (size_t)n);
+    r.p += n;
+    return r;
 }
