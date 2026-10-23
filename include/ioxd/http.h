@@ -143,7 +143,9 @@ bool ioxd_on_head(ioxd_ctx *ctx, ioxd_head_fn fn, void *arg);
  * the body goes on, FLUSH when the handler flushed on purpose, so a live feed moves, FINISH
  * once the body is complete, called again until nothing is pending. It returns 1 while it has
  * more output than fit, 0 when done with the call, -1 on an error, which fails the reply. end
- * runs once when the reply is over, however it ended. Installed at the on_head moment, before
+ * runs once: as soon as FINISH has drained the filter - before what it wrote is sent, so a coder
+ * is free again while its reply is still on the way - or else when the reply is over, however it
+ * ended. Installed at the on_head moment, before
  * the head is out (false after): the engine then frames the reply chunked when the body
  * streams - a declared length is the plaintext's - and with the exact coded length when it was
  * buffered whole, still one message. */

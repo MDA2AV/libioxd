@@ -168,6 +168,9 @@ ioxd_pipewriter *ioxd__engine_writer(ioxd_ctx *ctx);   /* the reply slab's write
  * the way (never for a body coded whole, which must fit, and does: the buffer has slack past
  * the slab for the coding's own overhead). A filter that consumes nothing and produces nothing
  * with room to spare would loop forever, so it fails the reply instead. The slab is empty after.
+ * A FINISH that drained the filter ends it then and there, before the coded bytes are sent: a
+ * coder goes back to its pool while its reply is still on the way, so the worker's next replies
+ * reuse it instead of each taking one of its own while the sends before them complete.
  */
 
 /* flush_with:
@@ -219,8 +222,9 @@ ioxd_pipewriter *ioxd__engine_writer(ioxd_ctx *ctx);   /* the reply slab's write
 
 /* filter_end / after_dispatch:
  * What follows the chain: the body drained or the connection marked to close, the reply
- * finished, then the filter's end on every way out - the request's coder goes back to its pool
- * whether the reply completed or the connection is closing.
+ * finished, then the filter's end on every way out encode has not ended it on already - the
+ * request's coder goes back to its pool whether the reply completed or the connection is
+ * closing.
  */
 
 /* finish:
