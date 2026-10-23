@@ -11,11 +11,12 @@
 <main>
 <div class="hdr"><span>IOXD_COMPRESS(3)</span><span>libioxd Programmer's Manual</span><span>IOXD_COMPRESS(3)</span></div>
 <h2>NAME</h2>
-<p>ioxd/compress.h - response compression, as middleware: a reply of a compressible type to a client whose Accept-Encoding takes br or gzip goes out coded, brotli or zlib doing the work at the engine's flush. A body that fit the slab is one call and one message with the exact coded length; one that streams is coded flush by flush, chunked.</p>
+<p>ioxd/compress.h - response compression, as middleware: a reply of a compressible type to a client whose Accept-Encoding takes br or gzip goes out coded, brotli, libdeflate or zlib doing the work at the engine's flush. A body that fit the slab is one call and one message with the exact coded length; one that streams is coded flush by flush, chunked.</p>
 <h2>SYNOPSIS</h2>
 <pre class="syn"><span class="c-pp">#include &lt;ioxd.h&gt;</span>
 
 <span class="c-ty">void</span> <a href="#ioxd_compress">ioxd_compress</a>(<a href="ioxd_http.html#ioxd_ctx">ioxd_ctx</a> *ctx, <a href="ioxd_http.html#ioxd_next">ioxd_next</a> *next);
+<span class="c-kw">typedef</span> <span class="c-kw">enum</span> <a href="#ioxd_compress_prefer">ioxd_compress_prefer</a> { IOXD_PREFER_AUTO, IOXD_PREFER_BR, IOXD_PREFER_GZIP, } <a href="#ioxd_compress_prefer">ioxd_compress_prefer</a>;
 <span class="c-kw">typedef</span> <span class="c-kw">struct</span> { ... } <a href="#ioxd_compress_config">ioxd_compress_config</a>;
 <span class="c-ty">int</span> <a href="#ioxd_compress_configure">ioxd_compress_configure</a>(<span class="c-kw">const</span> <a href="#ioxd_compress_config">ioxd_compress_config</a> *config);
 <span class="c-kw">const</span> <span class="c-ty">char</span> *<a href="#ioxd_compress_codings">ioxd_compress_codings</a>(<span class="c-ty">void</span>);</pre>
@@ -24,15 +25,26 @@
 <pre class="decl" id="ioxd_compress">
 <span class="c-ty">void</span> ioxd_compress(ioxd_ctx *ctx, ioxd_next *next);
 </pre>
-<div class="text"><p>The middleware: on the root (<a href="ioxd_router.html#IOXD_USE">IOXD_USE</a>), a group, or listed after an endpoint's handler. It does nothing to a request without Accept-Encoding, to a reply that is not 2xx, that already carries a Content-Encoding, whose type is not text, JSON, XML, JavaScript, SVG or WebAssembly, or whose whole body is smaller than min_bytes. Otherwise it picks brotli when the client takes br with a q at least gzip's, gzip when it takes that, and sets Content-Encoding; Vary tells caches either way. Built without brotli or zlib (make BROTLI=0, ZLIB=0, or pkg-config finding neither), it is the middleware that compresses with what it has, or nothing.</p></div>
+<div class="text"><p>The middleware: on the root (<a href="ioxd_router.html#IOXD_USE">IOXD_USE</a>), a group, or listed after an endpoint's handler. It does nothing to a request without Accept-Encoding, to a reply that is not 2xx, that already carries a Content-Encoding, whose type is not text, JSON, XML, JavaScript, SVG or WebAssembly, or whose whole body is smaller than min_bytes. Otherwise it codes with what the client weights highest of what this build has, a tie going the way prefer says, and sets Content-Encoding; Vary tells caches either way. gzip for a body that fit the slab is libdeflate's, in one call, when the build has it, and zlib's otherwise, as it is for a body that streams. Built without some of them (make BROTLI=0, ZLIB=0, LIBDEFLATE=0, or pkg-config not finding them), it is the middleware that compresses with what it has, or nothing.</p></div>
+</div>
+<div class="entry">
+<pre class="decl" id="ioxd_compress_prefer">
+<span class="c-kw">typedef</span> <span class="c-kw">enum</span> ioxd_compress_prefer {
+    IOXD_PREFER_AUTO,
+    IOXD_PREFER_BR,
+    IOXD_PREFER_GZIP,
+} ioxd_compress_prefer;
+</pre>
+<div class="text"><p>Which coding takes a reply the client weights br and gzip the same for. AUTO is gzip for a body that fit the slab when libdeflate is built in - at the default levels its gzip is both smaller and cheaper than brotli's, measured on JSON, CSS, JavaScript and SVG - and br otherwise, which is also what a body that streams gets: zlib streams gzip, and loses to brotli there.</p></div>
 </div>
 <div class="entry">
 <pre class="decl" id="ioxd_compress_config">
 <span class="c-kw">typedef</span> <span class="c-kw">struct</span> ioxd_compress_config {
-    <span class="c-ty">int</span>    brotli_quality;   <span class="c-cm">/* 0..11; 1 unless set: fast, and still four to eight times smaller on JSON */</span>
+    <span class="c-ty">int</span>    brotli_quality;   <span class="c-cm">/* 1..11; 1 unless set: fast, and still four to eight times smaller on JSON (zero is unset, so 0 is not on offer) */</span>
     <span class="c-ty">int</span>    brotli_window;    <span class="c-cm">/* lgwin 10..24; 22 unless set                                             */</span>
     <span class="c-ty">int</span>    gzip_level;       <span class="c-cm">/* 1..9; 1 unless set                                                      */</span>
     <span class="c-ty">size_t</span> min_bytes;        <span class="c-cm">/* a whole body smaller than this goes out as it is; 256 unless set        */</span>
+    ioxd_compress_prefer prefer;   <span class="c-cm">/* who takes a tie; IOXD_PREFER_AUTO unless set                     */</span>
 } ioxd_compress_config;
 <span class="c-ty">int</span> ioxd_compress_configure(<span class="c-kw">const</span> ioxd_compress_config *config);
 </pre>
@@ -45,7 +57,7 @@
 <pre class="decl" id="ioxd_compress_codings">
 <span class="c-kw">const</span> <span class="c-ty">char</span> *ioxd_compress_codings(<span class="c-ty">void</span>);
 </pre>
-<div class="text"><p>Which codings this build compresses with: "br, gzip", "br", "gzip" or "".</p></div>
+<div class="text"><p>Which codings this build compresses with, the one a tie goes to for a body that fit the slab first: "gzip, br", "br, gzip", "br", "gzip" or "".</p></div>
 </div>
 <h2>EXAMPLES</h2>
 <p>One endpoint compressed, the rest untouched; brotli asked to try harder:</p>
@@ -60,7 +72,7 @@
 <a href="ioxd_router.html#IOXD_GET">IOXD_GET</a>(<span class="c-str">"/avatar.png"</span>, avatar);                    <span class="c-cm">/* image/png: as it is */</span></pre>
 <h2>SEE ALSO</h2>
 <p><a href="ioxd_config.html">ioxd_config(3)</a>, <a href="ioxd_http.html">ioxd_http(3)</a>, <a href="ioxd_router.html">ioxd_router(3)</a>, <a href="ioxd_slice.html">ioxd_slice(3)</a>, <a href="ioxd_json.html">ioxd_json(3)</a>, <a href="ioxd_pipe.html">ioxd_pipe(3)</a>, <a href="ioxd_run.html">ioxd_run(3)</a>, <a href="ioxd_timer.html">ioxd_timer(3)</a>, <a href="ioxd_socket.html">ioxd_socket(3)</a>, <a href="ioxd_tls.html">ioxd_tls(3)</a>, <a href="ioxd_static.html">ioxd_static(3)</a>, <a href="ioxd_examples.html">ioxd_examples(7)</a>, <a href="ioxd.7.html">ioxd(7)</a>, <a href="ioxd_engine.7.html">ioxd_engine(7)</a></p>
-<div class="ftr"><span>libioxd 0.1.0</span><span>2026-09-11</span><span>IOXD_COMPRESS(3)</span></div>
+<div class="ftr"><span>libioxd 0.1.0</span><span>2026-10-23</span><span>IOXD_COMPRESS(3)</span></div>
 </main>
 </body>
 </html>

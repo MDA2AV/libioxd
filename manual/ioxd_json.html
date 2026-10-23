@@ -56,6 +56,7 @@
         <span class="c-kw">struct</span> { <span class="c-ty">char</span> *p; <span class="c-ty">size_t</span> cap, *len; } mem;
     } to;
     <span class="c-ty">void</span>    *tail;                              <span class="c-cm">/* private: the slab's writer, where the bytes land */</span>
+    <span class="c-ty">char</span>    *run;                               <span class="c-cm">/* private: where a struct's run began, not yet committed */</span>
 
     <span class="c-ty">uint64_t</span> has_value;                         <span class="c-cm">/* per level: a value is there, so a comma is due */</span>
     <span class="c-ty">uint64_t</span> is_object;                         <span class="c-cm">/* per level: it closes with '}' rather than ']'  */</span>
@@ -135,7 +136,8 @@ IOXD_JSON_WRITER(name, FIELDS)
     X(ARRAY,    <span class="c-kw">const</span> <span class="c-ty">char</span> *, tags,   n_tags)    \
     X(OBJECTS,  order,        orders, n_orders)
 <a href="#IOXD_JSON_STRUCT">IOXD_JSON_STRUCT</a>(user, USER_FIELDS)</pre>
-<p>VALUE is a scalar, written by its C type; OBJECT a nested struct held by value; OPTIONAL a pointer to one, null where the pointer is NULL; ARRAY scalars and the field holding their count; OBJECTS the same for nested structs. <a href="#IOXD_JSON_STRUCT">IOXD_JSON_STRUCT</a> defines the struct and the function - struct user, and user_to_json(<a href="#ioxd_json">ioxd_json</a> *, const struct user *); <a href="#IOXD_JSON_WRITER">IOXD_JSON_WRITER</a> only the function, for a struct declared elsewhere with the same fields. A nested struct's own <a href="#IOXD_JSON_STRUCT">IOXD_JSON_STRUCT</a> comes first. Counts are size_t; arrays are pointers to their first element. A note beside a field is written as a block comment, the way playground/hello/main.c writes them: a // one would run on through the backslash and swallow the lines after it.</p></div>
+<p>VALUE is a scalar, written by its C type; OBJECT a nested struct held by value; OPTIONAL a pointer to one, null where the pointer is NULL; ARRAY scalars and the field holding their count; OBJECTS the same for nested structs. <a href="#IOXD_JSON_STRUCT">IOXD_JSON_STRUCT</a> defines the struct and the function - struct user, and user_to_json(<a href="#ioxd_json">ioxd_json</a> *, const struct user *); <a href="#IOXD_JSON_WRITER">IOXD_JSON_WRITER</a> only the function, for a struct declared elsewhere with the same fields. A nested struct's own <a href="#IOXD_JSON_STRUCT">IOXD_JSON_STRUCT</a> comes first. Counts are size_t; arrays are pointers to their first element. A note beside a field is written as a block comment, the way playground/hello/main.c writes them: a // one would run on through the backslash and swallow the lines after it.</p>
+<p>The function writes the struct in one run rather than a call per piece: the shape is known when it is compiled, so every key goes out as a token spelled then - its quotes and colon, and the comma before it, one fixed-size copy, never scanned for escapes, a field's name being a C identifier - and every value by an inline writer, with room checked once a piece against the most that piece can take. When a piece needs more room than is left, what is written so far is committed and the sink asked for more - a reply's or a pipe's slab is sent then, as with any other write - so a struct streams past any number of flushes. The bytes, and the failures, are exactly those of the calls above: the same escapes, numbers and nesting limit. The function also defines name__json_run, the run itself, which an enclosing struct's run calls.</p></div>
 </div>
 <h2>EXAMPLES</h2>
 <p>Written as you go, straight into the reply:</p>
@@ -165,7 +167,7 @@ IOXD_JSON_WRITER(name, FIELDS)
 user_to_json(&amp;j, &amp;u);                                 <span class="c-cm">/* {"id":42,"name":"Zoe","tags":[...],"orders":[{...}]} */</span></pre>
 <h2>SEE ALSO</h2>
 <p><a href="ioxd_config.html">ioxd_config(3)</a>, <a href="ioxd_http.html">ioxd_http(3)</a>, <a href="ioxd_router.html">ioxd_router(3)</a>, <a href="ioxd_slice.html">ioxd_slice(3)</a>, <a href="ioxd_pipe.html">ioxd_pipe(3)</a>, <a href="ioxd_run.html">ioxd_run(3)</a>, <a href="ioxd_timer.html">ioxd_timer(3)</a>, <a href="ioxd_socket.html">ioxd_socket(3)</a>, <a href="ioxd_tls.html">ioxd_tls(3)</a>, <a href="ioxd_static.html">ioxd_static(3)</a>, <a href="ioxd_compress.html">ioxd_compress(3)</a>, <a href="ioxd_examples.html">ioxd_examples(7)</a>, <a href="ioxd.7.html">ioxd(7)</a>, <a href="ioxd_engine.7.html">ioxd_engine(7)</a></p>
-<div class="ftr"><span>libioxd 0.1.0</span><span>2026-09-11</span><span>IOXD_JSON(3)</span></div>
+<div class="ftr"><span>libioxd 0.1.0</span><span>2026-10-23</span><span>IOXD_JSON(3)</span></div>
 </main>
 </body>
 </html>
