@@ -371,6 +371,8 @@ static int send_coded(ioxd_ctx *ctx, const char *head, int *head_len)
     return 0;
 }
 
+static void filter_end(struct serve_state *state);
+
 static int encode(ioxd_ctx *ctx, enum ioxd_filter_op op, char *head, int *head_len)
 {
     struct serve_state *state = STATE(ctx);
@@ -396,6 +398,8 @@ static int encode(ioxd_ctx *ctx, enum ioxd_filter_op op, char *head, int *head_l
         }
     }
     pw->len = 0;
+    if (op == IOXD_FILTER_FINISH)
+        filter_end(state);
     return 0;
 }
 

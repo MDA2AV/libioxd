@@ -10,7 +10,10 @@
  * sink's tail - the reply slab, a raw pipe's slab, or a buffer - a comma and a value, or a
  * comma and a quoted key, as one run of stores, and moves the tail past them. The engine is
  * only asked for room when the slab is full, which is when it sends. Numbers are formatted
- * into a small stack buffer first; the writer never allocates.
+ * into a small stack buffer first; the writer never allocates. A struct described once is
+ * written another way: as one run (ioxd/json.h), its keys spelled at compile time and its values
+ * written inline, which comes here only to open the run, to ask the sink for more room, to
+ * close it, and for the strings and reals the inline writers leave to the calls' own code.
  */
 
 /* at file scope:
@@ -58,7 +61,8 @@
  */
 
 /* clean_run:
- * How many bytes from p can go out as they are.
+ * How many bytes from p can go out as they are: eight a step with the struct run's check, the
+ * first that must be escaped found by its lane, then a byte at a time for the tail.
  */
 
 /* put_escaped:
@@ -137,4 +141,32 @@
 
 /* ioxd_json_raw:
  * Already JSON, copied as is. Nothing is not a value: an empty slice would leave "[,]" behind.
+ */
+
+/* ── a struct's run: the notes ─────────────────────────────────────────────────────────── */
+
+/* ioxd__json_open:
+ * A struct starts as a value: the comma it owes, by value_lead, then the run - the tail, and the
+ * room behind it. Where the run began is kept in the writer, so what was written can be
+ * committed whenever the sink has to be asked for more.
+ */
+
+/* ioxd__json_room:
+ * The slow path of a run, out of line: commit what was written, then want what the next piece
+ * needs - the sink sends its slab first when it must - and start the run again there. A failed
+ * run stays failed: it commits nothing.
+ */
+
+/* ioxd__json_close:
+ * The run committed: the struct is the value value_lead made room for at open.
+ */
+
+/* ioxd__json_quote:
+ * A string the run will not write in place - one that needs escapes, or longer than
+ * IOXD__JSON_RUN_MAX - through the calls' own path: the run committed, the string put piece by
+ * piece, and the run started again at the tail it left.
+ */
+
+/* ioxd__json_real:
+ * A double or float into a run: the same shortest text the calls write, null for nan and inf.
  */

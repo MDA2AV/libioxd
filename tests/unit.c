@@ -511,6 +511,153 @@ static void test_json_locale(void)
 }
 /* NOLINTEND(concurrency-mt-unsafe) */
 
+/* A struct's run against the calls it stands for: the same bytes for every string, number and
+ * nesting, the calls being the reference. */
+#define PROBE_FIELDS(X)                      \
+    X(VALUE,    ioxd_slice,    s)
+IOXD_JSON_STRUCT(probe, PROBE_FIELDS)
+
+#define NUMS_FIELDS(X)                       \
+    X(VALUE,    int64_t,       i)            \
+    X(VALUE,    uint64_t,      u)            \
+    X(VALUE,    short,         h)            \
+    X(VALUE,    unsigned char, b)
+IOXD_JSON_STRUCT(nums, NUMS_FIELDS)
+
+#define REALS_FIELDS(X)                      \
+    X(VALUE,    double,        d)            \
+    X(VALUE,    float,         f)
+IOXD_JSON_STRUCT(reals, REALS_FIELDS)
+
+#define NODE_FIELDS(X)                       \
+    X(VALUE,    int,           n)            \
+    X(OPTIONAL, node,          next)
+IOXD_JSON_STRUCT(node, NODE_FIELDS)
+
+static bool probe_matches(ioxd_slice s)
+{
+    static char run[8192], calls[8192];
+    size_t      nrun, ncalls;
+    struct probe p   = { s };
+    ioxd_json    j   = ioxd_json_mem(run, sizeof run, &nrun);
+    bool         ok  = probe_to_json(&j, &p) && ioxd_json_done(&j);
+    ioxd_json    k   = ioxd_json_mem(calls, sizeof calls, &ncalls);
+    ioxd_json_object(&k);
+    ioxd_json_key(&k, "s");
+    ioxd_json_string(&k, s);
+    ioxd_json_end(&k);
+    return ok && ioxd_json_done(&k) && nrun == ncalls && memcmp(run, calls, nrun) == 0;
+}
+
+static bool nums_matches(int64_t i, uint64_t u, short h, unsigned char b)
+{
+    char        run[256], calls[256];
+    size_t      nrun, ncalls;
+    struct nums v  = { i, u, h, b };
+    ioxd_json   j  = ioxd_json_mem(run, sizeof run, &nrun);
+    bool        ok = nums_to_json(&j, &v);
+    ioxd_json   k  = ioxd_json_mem(calls, sizeof calls, &ncalls);
+    ioxd_json_object(&k);
+    ioxd_json_key(&k, "i"); ioxd_json_int(&k, i);
+    ioxd_json_key(&k, "u"); ioxd_json_uint(&k, u);
+    ioxd_json_key(&k, "h"); ioxd_json_int(&k, h);
+    ioxd_json_key(&k, "b"); ioxd_json_uint(&k, b);
+    ioxd_json_end(&k);
+    return ok && nrun == ncalls && memcmp(run, calls, nrun) == 0;
+}
+
+static bool reals_match(double d, float f)
+{
+    char         run[256], calls[256];
+    size_t       nrun, ncalls;
+    struct reals v  = { d, f };
+    ioxd_json    j  = ioxd_json_mem(run, sizeof run, &nrun);
+    bool         ok = reals_to_json(&j, &v);
+    ioxd_json    k  = ioxd_json_mem(calls, sizeof calls, &ncalls);
+    ioxd_json_object(&k);
+    ioxd_json_key(&k, "d"); ioxd_json_double(&k, d);
+    ioxd_json_key(&k, "f"); ioxd_json_float(&k, f);
+    ioxd_json_end(&k);
+    return ok && nrun == ncalls && memcmp(run, calls, nrun) == 0;
+}
+
+/* Structs as values: after a key, and as elements beside other values. */
+static void doc_structs_as_values(ioxd_json *j)
+{
+    struct probe a = { S("a") }, b = { S("b") };
+    ioxd_json_object(j);
+    ioxd_json_key(j, "x");    probe_to_json(j, &a);
+    ioxd_json_key(j, "list"); ioxd_json_array(j); probe_to_json(j, &a); probe_to_json(j, &b); ioxd_json_int(j, 1); ioxd_json_end(j);
+    ioxd_json_end(j);
+}
+
+static void test_json_runs(void)
+{
+    /* Every byte that must be escaped and some that must not, at every place in strings of every
+     * length to 40 - across the 4- and 8-byte loads the check is made of. */
+    static const unsigned char bytes[] = { 0x00, 0x01, 0x08, '\n', 0x1f, '"', '\\', ' ', 'A', 0x7f, 0x80, 0xc3, 0xff };
+    char all_bytes[256], buf[64];
+    bool all = true;
+    for (size_t n = 0; n <= 40; n++)
+        for (size_t at = 0; at < (n ? n : 1); at++)
+            for (size_t b = 0; b < sizeof bytes; b++) {
+                memset(buf, 'x', n);
+                if (n)
+                    buf[at] = (char)bytes[b];
+                all = all && probe_matches((ioxd_slice){ buf, n });
+            }
+    CHECK(all);
+    for (size_t i = 0; i < sizeof all_bytes; i++)
+        all_bytes[i] = (char)i;
+    CHECK(probe_matches((ioxd_slice){ all_bytes, sizeof all_bytes }));
+
+    /* Around the longest string a run writes in place, and well past it, clean and not. */
+    static char longer[3000];
+    memset(longer, 'y', sizeof longer);
+    CHECK(probe_matches((ioxd_slice){ longer, IOXD__JSON_RUN_MAX - 1 }) && probe_matches((ioxd_slice){ longer, IOXD__JSON_RUN_MAX })
+          && probe_matches((ioxd_slice){ longer, IOXD__JSON_RUN_MAX + 1 }) && probe_matches((ioxd_slice){ longer, sizeof longer }));
+    longer[sizeof longer - 1] = '"';
+    CHECK(probe_matches((ioxd_slice){ longer, sizeof longer }));
+
+    /* Every digit count, either side of each power of ten, and the extremes. */
+    all = true;
+    uint64_t ten = 1;
+    for (int k = 0; k <= 19; k++, ten *= 10) {
+        all = all && nums_matches((int64_t)(ten - 1), ten - 1, 0, 0) && nums_matches(-(int64_t)(ten - 1), ten, 0, 0);
+        if (k < 19)
+            all = all && nums_matches((int64_t)ten, ten + 1, 0, 0);
+    }
+    CHECK(all);
+    CHECK(nums_matches(INT64_MIN, UINT64_MAX, -32768, 255) && nums_matches(INT64_MAX, 0, 32767, 0)
+          && nums_matches(INT64_MIN + 1, 1, -1, 1));
+
+    CHECK(reals_match(0.1, 0.1F) && reals_match(1.0 / 3.0, 1.0F / 3.0F) && reals_match(-0.0, 16777217.0F)
+          && reals_match(1e21, 1e20F) && reals_match(9007199254740993.0, -0.0F)
+          && reals_match(INFINITY, NAN) && reals_match(NAN, INFINITY));
+
+    CHECK(json_is("{\"x\":{\"s\":\"a\"},\"list\":[{\"s\":\"a\"},{\"s\":\"b\"},1]}", doc_structs_as_values));
+
+    char         small[10];
+    size_t       len;
+    struct probe p = { S("a value longer than the buffer") };
+    ioxd_json    j = ioxd_json_mem(small, sizeof small, &len);
+    CHECK(!probe_to_json(&j, &p) && j.failed && len <= sizeof small);       /* refused, nothing past the end */
+    CHECK(!probe_to_json(&j, &p));                                           /* failed stays failed */
+    j = ioxd_json_mem(small, sizeof small, &len);
+    CHECK(ioxd_json_object(&j) && !probe_to_json(&j, &p) && j.failed);      /* a value where a key is due */
+
+    /* The nesting limit is the calls' own: 63 levels go, the 64th is refused. */
+    static struct node chain[64];
+    static char        deep[4096];
+    for (int i = 0; i < 64; i++)
+        chain[i] = (struct node){ i, i + 1 < 63 ? &chain[i + 1] : NULL };
+    j = ioxd_json_mem(deep, sizeof deep, &len);
+    CHECK(node_to_json(&j, &chain[0]) && ioxd_json_done(&j));
+    chain[62].next = &chain[63];
+    j = ioxd_json_mem(deep, sizeof deep, &len);
+    CHECK(!node_to_json(&j, &chain[0]) && j.failed);
+}
+
 static void test_json(void)
 {
     CHECK(json_is("{\"id\":42,\"name\":\"Zo\xc3\xab \\\"Z\\\"\",\"active\":true,\"handle\":\"zoe\",\"visits\":3,"
@@ -570,6 +717,7 @@ static void test_json(void)
 
     test_json_levels();
     test_json_locale();
+    test_json_runs();
 }
 
 /* ioxd_configure: a zero keeps a default, a bad value is refused and changes nothing. */
@@ -586,6 +734,18 @@ static void test_config(void)
     CHECK(ioxd_configure(&(ioxd_config){ .stack_size = 4096 }) == -1);              /* the engine's frames alone are 44 KB */
     CHECK(ioxd_configure(&(ioxd_config){ .recv_buffers = 8, .recv_buffer_size = 64 }) == 0);   /* the starved test build */
     CHECK(ioxd_configure(&(ioxd_config){ 0 }) == 0);                                /* back to the defaults */
+
+    /* The compression middleware's: a tie's winner shows in the order of the codings it reports. */
+    const char *codings = ioxd_compress_codings();
+    CHECK(!strcmp(codings, "gzip, br") || !strcmp(codings, "br, gzip") || !strcmp(codings, "br") || !strcmp(codings, "gzip")
+          || !strcmp(codings, ""));
+    if (strchr(codings, ',')) {
+        CHECK(ioxd_compress_configure(&(ioxd_compress_config){ .prefer = IOXD_PREFER_BR }) == 0 && !strcmp(ioxd_compress_codings(), "br, gzip"));
+        CHECK(ioxd_compress_configure(&(ioxd_compress_config){ .prefer = IOXD_PREFER_GZIP }) == 0 && !strcmp(ioxd_compress_codings(), "gzip, br"));
+    }
+    CHECK(ioxd_compress_configure(&(ioxd_compress_config){ .prefer = (ioxd_compress_prefer)7 }) == -1);
+    CHECK(ioxd_compress_configure(&(ioxd_compress_config){ .brotli_quality = 12 }) == -1);
+    CHECK(ioxd_compress_configure(&(ioxd_compress_config){ .gzip_level = 10 }) == -1);
 }
 
 /* ioxd_delay off a worker: nothing to wait on, and no sleeping either. */

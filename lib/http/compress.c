@@ -13,6 +13,12 @@
 #if IOXD_ZLIB
 #include <zlib.h>
 #endif
+#ifndef IOXD_LIBDEFLATE
+#define IOXD_LIBDEFLATE 0
+#endif
+#if IOXD_LIBDEFLATE
+#include <libdeflate.h>
+#endif
 
 #define ARENA_FIRST (1024UL * 1024)
 #define ALIGN       16
@@ -38,7 +44,6 @@ static ioxd_compress_config g_cfg = { .brotli_quality = 1, .brotli_window = 22, 
 
 #if IOXD_BROTLI || IOXD_ZLIB
 
-static const char *const           names[KINDS] = { "br", "gzip" };
 static _Thread_local struct coder *tl_free[KINDS];
 
 #if IOXD_BROTLI
@@ -187,7 +192,79 @@ static int gzip_run(void *arg, const void *in, size_t *in_len, void *out, size_t
 
 #endif
 
+#if IOXD_LIBDEFLATE
+static _Thread_local struct libdeflate_compressor *tl_deflate;
+
+static int deflate_whole(void *arg, const void *in, size_t *in_len, void *out, size_t *out_len, enum ioxd_filter_op op)
+{
+    size_t n = op == IOXD_FILTER_FINISH ? libdeflate_gzip_compress(arg, in, *in_len, out, *out_len) : 0;
+    if (n == 0)
+        return -1;
+    *out_len = n;
+    return 0;
+}
+#endif
+
+static bool code_br(ioxd_ctx *ctx, size_t buffered, bool whole)
+{
+#if IOXD_BROTLI
+    struct coder *c = coder_take(KIND_BR, whole ? buffered : 0);
+    if (!c)
+        return false;
+    ioxd_filter filter = { .run = br_run, .end = coder_give, .arg = c };
+    if (!ioxd_reply_filter(ctx, &filter)) {
+        coder_give(c);
+        return false;
+    }
+    ioxd_header(ctx, "content-encoding", "br");
+    return true;
+#else
+    (void)ctx;
+    (void)buffered;
+    (void)whole;
+    return false;
+#endif
+}
+
+static bool code_gzip(ioxd_ctx *ctx, bool whole)
+{
+    (void)whole;                                 /* only libdeflate's path tells the two apart */
+#if IOXD_LIBDEFLATE
+    if (whole) {
+        if (!tl_deflate)
+            tl_deflate = libdeflate_alloc_compressor(g_cfg.gzip_level);
+        ioxd_filter filter = { .run = deflate_whole, .arg = tl_deflate };
+        if (tl_deflate && ioxd_reply_filter(ctx, &filter)) {
+            ioxd_header(ctx, "content-encoding", "gzip");
+            return true;
+        }
+    }
+#endif
+#if IOXD_ZLIB
+    struct coder *c = coder_take(KIND_GZIP, 0);
+    if (!c)
+        return false;
+    ioxd_filter filter = { .run = gzip_run, .end = coder_give, .arg = c };
+    if (!ioxd_reply_filter(ctx, &filter)) {
+        coder_give(c);
+        return false;
+    }
+    ioxd_header(ctx, "content-encoding", "gzip");
+    return true;
+#else
+    (void)ctx;
+    return false;
+#endif
+}
+
 /* ── the decision ──────────────────────────────────────────────────────────────────────── */
+
+static bool gzip_first(double br, double gz, bool whole)
+{
+    if (br != gz)
+        return gz > br;
+    return g_cfg.prefer == IOXD_PREFER_GZIP || (g_cfg.prefer == IOXD_PREFER_AUTO && whole && IOXD_LIBDEFLATE);
+}
 
 static bool compressible(ioxd_slice type)
 {
@@ -223,34 +300,18 @@ static void decide(ioxd_ctx *ctx, void *arg, size_t buffered, bool whole)
     ioxd_header(ctx, "vary", "accept-encoding");
     if (whole && buffered < g_cfg.min_bytes)
         return;
-#if IOXD_BROTLI || IOXD_ZLIB
-    double        gz = ioxd_accepts_encoding(ctx, "gzip");
-    struct coder *c  = nullptr;
-    ioxd_filter   filter = { .end = coder_give };
-#if IOXD_BROTLI
-    double br = ioxd_accepts_encoding(ctx, "br");
-    if (br > 0 && br >= gz) {
-        c          = coder_take(KIND_BR, whole ? buffered : 0);
-        filter.run = br_run;
+    double br = ioxd_accepts_encoding(ctx, "br"), gz = ioxd_accepts_encoding(ctx, "gzip");
+    if (gzip_first(br, gz, whole)) {
+        if (gz > 0 && code_gzip(ctx, whole))
+            return;
+        if (br > 0)
+            code_br(ctx, buffered, whole);
+    } else {
+        if (br > 0 && code_br(ctx, buffered, whole))
+            return;
+        if (gz > 0)
+            code_gzip(ctx, whole);
     }
-#endif
-#if IOXD_ZLIB
-    if (!c && gz > 0) {
-        c          = coder_take(KIND_GZIP, 0);
-        filter.run = gzip_run;
-    }
-#endif
-    if (!c)
-        return;
-    filter.arg = c;
-    if (!ioxd_reply_filter(ctx, &filter)) {
-        coder_give(c);
-        return;
-    }
-    ioxd_header(ctx, "content-encoding", names[c->kind]);
-#else
-    (void)buffered;
-#endif
 }
 
 /* ── the middleware ────────────────────────────────────────────────────────────────────── */
@@ -273,8 +334,10 @@ int ioxd_compress_configure(const ioxd_compress_config *config)
         cfg.gzip_level = config->gzip_level;
     if (config->min_bytes)
         cfg.min_bytes = config->min_bytes;
-    if (cfg.brotli_quality < 0 || cfg.brotli_quality > 11) {
-        fprintf(stderr, "ioxd_compress_configure: brotli_quality must be 0..11\n");
+    if (config->prefer)
+        cfg.prefer = config->prefer;
+    if (cfg.brotli_quality < 1 || cfg.brotli_quality > 11) {
+        fprintf(stderr, "ioxd_compress_configure: brotli_quality must be 1..11\n");
         return -1;
     }
     if (cfg.brotli_window < 10 || cfg.brotli_window > 24) {
@@ -285,17 +348,21 @@ int ioxd_compress_configure(const ioxd_compress_config *config)
         fprintf(stderr, "ioxd_compress_configure: gzip_level must be 1..9\n");
         return -1;
     }
+    if (cfg.prefer != IOXD_PREFER_AUTO && cfg.prefer != IOXD_PREFER_BR && cfg.prefer != IOXD_PREFER_GZIP) {
+        fprintf(stderr, "ioxd_compress_configure: prefer must be IOXD_PREFER_AUTO, IOXD_PREFER_BR or IOXD_PREFER_GZIP\n");
+        return -1;
+    }
     g_cfg = cfg;
     return 0;
 }
 
 const char *ioxd_compress_codings(void)
 {
-#if IOXD_BROTLI && IOXD_ZLIB
-    return "br, gzip";
+#if IOXD_BROTLI && (IOXD_ZLIB || IOXD_LIBDEFLATE)
+    return gzip_first(1, 1, true) ? "gzip, br" : "br, gzip";
 #elif IOXD_BROTLI
     return "br";
-#elif IOXD_ZLIB
+#elif IOXD_ZLIB || IOXD_LIBDEFLATE
     return "gzip";
 #else
     return "";

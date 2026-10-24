@@ -103,6 +103,13 @@ def check(name, cond):
 results = []
 BOTH = b"Accept-Encoding: gzip, br\r\n"
 
+# A tie goes to the coding the build names first for a body that fit the slab - gzip when libdeflate
+# codes it, smaller and cheaper than brotli at the default levels, br otherwise - and to br for a
+# body that streams, which zlib codes worse than brotli.
+st, hd, codings, ch = get("/zip/codings")
+WHOLE_TIE = codings.decode().split(", ")[0]
+print(f"note: this build codes {codings.decode()!r}; a whole body's tie goes to {WHOLE_TIE}")
+
 # the plain forms, to compare with: a JSON that fits the slab, one that streams, a feed, a declared length
 st, hd, plain_json, ch = get("/json/big?n=200")
 results.append(check("GET /json/big?n=200 without Accept-Encoding -> plain, no content-encoding, no vary",
@@ -116,11 +123,11 @@ results.append(check("GET /zip/declared plain -> content-length 100000", st == 2
 
 # br and gzip on the buffered JSON: one message with the exact coded length
 st, hd, body, ch = get("/json/big?n=200", BOTH)
-results.append(check("gzip, br -> content-encoding br (preferred on a tie), vary accept-encoding",
-                     st == 200 and hd.get("content-encoding") == "br" and hd.get("vary") == "accept-encoding"))
+results.append(check(f"gzip, br -> content-encoding {WHOLE_TIE} (the tie, for a whole body), vary accept-encoding",
+                     st == 200 and hd.get("content-encoding") == WHOLE_TIE and hd.get("vary") == "accept-encoding"))
 results.append(check("  content-length is the coded length, not chunked", not ch and hd.get("content-length") == str(len(body))))
 results.append(check("  a third of the plain body or less", len(body) * 3 <= len(plain_json)))
-if brotli:
+if brotli or WHOLE_TIE == "gzip":
     results.append(check("  decodes to the plain body", decode(hd, body) == plain_json))
 else:
     print("skip brotli decoding: no brotli module (pip install brotli); the framing was checked")
@@ -135,7 +142,7 @@ results.append(check("both refused -> plain, vary still set", "content-encoding"
 st, hd, body, ch = get("/json/big?n=200", b"Accept-Encoding: deflate\r\n")
 results.append(check("deflate only -> plain", "content-encoding" not in hd and body == plain_json))
 st, hd, body, ch = get("/json/big?n=200", b"Accept-Encoding: *\r\n")
-results.append(check("* -> br", hd.get("content-encoding") == "br"))
+results.append(check(f"* -> {WHOLE_TIE}", hd.get("content-encoding") == WHOLE_TIE))
 st, hd, body, ch = get("/json/big?n=200", b"Accept-Encoding: identity, *;q=0\r\n")
 results.append(check("identity, *;q=0 -> plain", "content-encoding" not in hd and body == plain_json))
 st, hd, body, ch = get("/json/big?n=200", b"Accept-Encoding: GZIP\r\n")
@@ -150,7 +157,7 @@ st, hd, body, ch = get("/health", BOTH)
 results.append(check("an endpoint without the middleware -> never coded, no vary", "content-encoding" not in hd and "vary" not in hd))
 st, hd, body, ch = get("/zip/raw?n=4096", BOTH)
 results.append(check("a body written into the slab directly (ioxd_reserve) -> coded like any other",
-                     st == 200 and hd.get("content-encoding") == "br" and (brotli is None or len(decode(hd, body)) == 4096)))
+                     st == 200 and hd.get("content-encoding") == WHOLE_TIE and (decode(hd, body) is None or len(decode(hd, body)) == 4096)))
 st, hd, body, ch = get("/zip/raw?n=4096", b"Accept-Encoding: gzip\r\n")
 results.append(check("  with gzip, decoded", hd.get("content-encoding") == "gzip" and len(decode(hd, body)) == 4096))
 
@@ -173,7 +180,21 @@ st, hd, body, ch = get("/zip/declared?n=100000", BOTH)
 results.append(check("  with br", hd.get("content-encoding") == "br" and ch and (brotli is None or decode(hd, body) == plain_declared)))
 st, hd, body, ch = get("/zip/raw?n=4096", BOTH)
 results.append(check("a body that fit the slab, written in place -> one message, the coded length",
-                     hd.get("content-encoding") == "br" and not ch and hd.get("content-length") == str(len(body))))
+                     hd.get("content-encoding") == WHOLE_TIE and not ch and hd.get("content-length") == str(len(body))))
+
+# structs through IOXD_JSON_STRUCT's run: coded whole, and coded as the slab's flushes cut them
+st, hd, plain_few, ch = get("/json/structs?n=20")
+st, hd, body, ch = get("/json/structs?n=20", BOTH)
+results.append(check(f"a few structs, whole -> {WHOLE_TIE}, the coded length, decodes to the plain document",
+                     st == 200 and hd.get("content-encoding") == WHOLE_TIE and not ch and hd.get("content-length") == str(len(body))
+                     and (decode(hd, body) is None or decode(hd, body) == plain_few)))
+st, hd, plain_structs, ch = get("/json/structs?n=3000")
+st, hd, body, ch = get("/json/structs?n=3000", b"Accept-Encoding: gzip\r\n")
+results.append(check("structs that stream, gzip -> chunked, decodes to the plain document",
+                     st == 200 and hd.get("content-encoding") == "gzip" and ch and decode(hd, body) == plain_structs))
+st, hd, body, ch = get("/json/structs?n=3000", BOTH)
+results.append(check("  with br, a stream's tie", hd.get("content-encoding") == "br" and ch
+                     and (brotli is None or decode(hd, body) == plain_structs)))
 st, hd, body, ch = get("/zip/stream?n=200000", b"Accept-Encoding: gzip\r\n")
 results.append(check("a 3 MB stream -> gzip, decodes whole", ch and len(decode(hd, body)) == len(b"".join(f"line {i} of 200000\n".encode() for i in range(1, 200001)))))
 
